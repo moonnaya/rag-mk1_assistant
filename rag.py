@@ -19,17 +19,23 @@ import ollama
 DOCS_DIR = Path("docs")              # carpeta con tus .md y .txt (admite subcarpetas)
 DB_DIR = "chroma_db"                 # donde Chroma guarda los datos
 COLECCION = "docs_bge_m3"            # nombre de la colección (ligado al modelo de embeddings)
-MODELO = "qwen2:7b"                  # modelo que redacta las respuestas
+MODELO = "qwen2.5:7b-instruct"       # modelo que redacta las respuestas
 MODELO_EMB = "bge-m3"                # modelo de embeddings (multilingüe)
-N_FRAGMENTOS = 4                     # cuántos trozos se pasan al modelo
-MAX_CAR = 1200                       # tamaño máximo aproximado de cada trozo
+N_FRAGMENTOS = 6                     # cuántos trozos se pasan al modelo
+MAX_CAR = 800                        # tamaño máximo aproximado de cada trozo
 NUM_CTX = 4096                       # ventana de contexto del modelo (en tokens)
+UMBRAL_DISTANCIA = 0.55              # descarta fragmentos con distancia coseno mayor que esto
+                                     # (medido: relevante 0.34-0.52; fuera de corpus >= 0.55)
+TEMPERATURA = 0.1                    # baja: respuestas pegadas al contexto, sin divagar
 GLOSARIO_FILE = Path("glosario.md")  # vocabulario y estilo: se añade SIEMPRE al prompt
 DEBUG = "--debug" in sys.argv        # muestra qué fragmentos se recuperan
 
 
 def trocear(texto, max_car=MAX_CAR):
-    """Divide por encabezados Markdown; las secciones largas se parten por párrafos."""
+    """Divide por encabezados Markdown; las secciones largas se parten por párrafos.
+
+    Devuelve una lista de tuplas (titulo_de_seccion, fragmento).
+    """
     secciones = re.split(r"(?m)^(?=#{1,4} )", texto)
     trozos = []
     for sec in secciones:
@@ -37,18 +43,29 @@ def trocear(texto, max_car=MAX_CAR):
         if not sec:
             continue
         if len(sec) <= max_car:
-            trozos.append(sec)
+            trozos.append((titulo_de(sec), sec))
             continue
         titulo = sec.splitlines()[0] if sec.startswith("#") else ""
         actual = ""
         for parrafo in sec.split("\n\n"):
             if actual and len(actual) + len(parrafo) > max_car:
-                trozos.append(actual.strip())
+                trozos.append((titulo_de(actual), actual.strip()))
                 actual = (titulo + "\n\n") if titulo and parrafo != titulo else ""
             actual += parrafo + "\n\n"
         if actual.strip():
-            trozos.append(actual.strip())
+            trozos.append((titulo_de(actual), actual.strip()))
     return trozos
+
+
+def titulo_de(trozo):
+    """Primera línea del fragmento si es encabezado, como texto limpio."""
+    for linea in trozo.splitlines():
+        if linea.startswith("#"):
+            return linea.lstrip("#").strip()
+        if linea.strip():
+            break
+    return ""
+
 
 
 def embeber(textos):
@@ -64,10 +81,10 @@ def indexar(coleccion):
             continue
         nombre = f.relative_to(DOCS_DIR).as_posix()
         texto = f.read_text(encoding="utf-8", errors="replace")
-        for n, trozo in enumerate(trocear(texto)):
+        for n, (seccion, trozo) in enumerate(trocear(texto)):
             ids.append(f"{nombre}-{n}")
             docs.append(trozo)
-            metas.append({"fuente": nombre})
+            metas.append({"fuente": nombre, "seccion": seccion})
 
     existentes = set(coleccion.get(include=[])["ids"])
     nuevos = [i for i, id_ in enumerate(ids) if id_ not in existentes]
@@ -90,10 +107,17 @@ def indexar(coleccion):
 def construir_instrucciones():
     """Instrucciones base + contenido de glosario.md (si existe)."""
     base = (
-        "Responde en español usando SOLO el contexto proporcionado. "
-        "Si la respuesta no está en el contexto, di que no lo sabes. "
-        "Si el contexto incluye código, cópialo tal cual y no inventes "
-        "funciones, macros ni constantes que no aparezcan en él."
+        "Responde en español usando SOLO el contexto proporcionado.\n"
+        "REGLAS (obligatorias):\n"
+        "- Cada afirmación factual debe terminar con la fuente entre corchetes, "
+        "así: [nombre-archivo]. No la repitas más de una vez por párrafo.\n"
+        "- Si el contexto no basta para responder, tu respuesta COMPLETA debe "
+        "ser exactamente y solo: "
+        "\"No lo sé, eso no aparece en la documentación.\" "
+        "Sin añadir nada más: ni sugerencias, ni escenarios, ni fuentes.\n"
+        "- Nunca inventes funciones, macros, constantes, nombres ni cifras. "
+        "Si el contexto incluye código, cópialo tal cual.\n"
+        "- No uses conocimiento ajeno al contexto, aunque lo parezcas saber."
     )
     if GLOSARIO_FILE.exists():
         glosario = GLOSARIO_FILE.read_text(encoding="utf-8").strip()
@@ -119,7 +143,7 @@ def abrir_coleccion(reindex=False):
 
 
 def recuperar(coleccion, pregunta):
-    """Busca los fragmentos más parecidos a la pregunta.
+    """Busca los fragmentos más parecidos a la pregunta (por encima del umbral).
 
     Devuelve (fragmentos, metadatos, distancias).
     """
@@ -128,28 +152,42 @@ def recuperar(coleccion, pregunta):
         n_results=N_FRAGMENTOS,
         include=["documents", "metadatas", "distances"],
     )
-    return res["documents"][0], res["metadatas"][0], res["distances"][0]
+    buenos = [i for i, d in enumerate(res["distances"][0]) if d <= UMBRAL_DISTANCIA]
+    return (
+        [res["documents"][0][i] for i in buenos],
+        [res["metadatas"][0][i] for i in buenos],
+        [res["distances"][0][i] for i in buenos],
+    )
 
 
 def generar(pregunta, fragmentos, metas):
     """Generador: va devolviendo trozos de la respuesta según el modelo los produce."""
-    contexto = "\n\n".join(f"[{m['fuente']}] {d}" for d, m in zip(fragmentos, metas))
+    contexto = "\n\n".join(
+        f"[{m['fuente']}] {('('+m['seccion']+') ' if m.get('seccion') else '')}{d}"
+        for d, m in zip(fragmentos, metas)
+    )
     flujo = ollama.chat(
         model=MODELO,
         messages=[
             {"role": "system", "content": construir_instrucciones()},
             {"role": "user", "content": f"Contexto:\n{contexto}\n\nPregunta: {pregunta}"},
         ],
-        options={"num_ctx": NUM_CTX},
+        options={"num_ctx": NUM_CTX, "temperature": TEMPERATURA, "top_p": 0.8},
         stream=True,
     )
     for parte in flujo:
         yield parte["message"]["content"]
 
 
+def sin_contexto(fragmentos):
+    """Verdad si tras el filtro de distancia no queda fragmento útil."""
+    return not fragmentos
+
+
 def fuentes_de(metas):
-    """Lista ordenada y sin repetir de los archivos de los que salen los fragmentos."""
-    return sorted({m["fuente"] for m in metas})
+    """Fuentes para mostrar: 'archivo › sección', ordenadas y sin repetir."""
+    return sorted({f"{m['fuente']} › {m['seccion']}" if m.get("seccion") else m["fuente"]
+                   for m in metas})
 
 
 def responder(coleccion, pregunta):
@@ -162,6 +200,9 @@ def responder(coleccion, pregunta):
         print("------------------------------")
 
     print("\nIA: ", end="", flush=True)
+    if sin_contexto(fragmentos):
+        print("No lo sé, eso no aparece en la documentación.")
+        return
     for trozo in generar(pregunta, fragmentos, metas):
         print(trozo, end="", flush=True)
     print(f"\n(Fuentes: {', '.join(fuentes_de(metas))})\n")

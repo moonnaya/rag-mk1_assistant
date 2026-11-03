@@ -129,9 +129,12 @@ def chat(cuerpo: Pregunta, peticion: Request):
         with candado:
             try:
                 fragmentos, metas, _ = rag.recuperar(estado["coleccion"], pregunta)
-                for trozo in rag.generar(pregunta, fragmentos, metas):
-                    if trozo:
-                        yield linea({"t": trozo})
+                if rag.sin_contexto(fragmentos):
+                    yield linea({"t": "No lo sé, eso no aparece en la documentación."})
+                else:
+                    for trozo in rag.generar(pregunta, fragmentos, metas):
+                        if trozo:
+                            yield linea({"t": trozo})
                 yield linea({"fuentes": rag.fuentes_de(metas)})
             except Exception:
                 traceback.print_exc()
