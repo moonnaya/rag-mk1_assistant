@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Asistente MK1</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --surface: #f4f4f5;
+    --user: #efeff1;
+    --code-bg: #f6f7f9;
+    --error: #b42318;
+    --rainbow: linear-gradient(135deg, #ff3b30 0 25%, #ffcc00 25% 50%, #34c759 50% 75%, #00c7ff 75%);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1b1b1d;
+      --fg: #ececec;
+      --muted: #9aa0a6;
+      --border: #333338;
+      --surface: #262629;
+      --user: #2b2b30;
+      --code-bg: #141416;
+      --error: #ff8a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  #app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+
+  /* Cabecera */
+  header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+  }
+  .logo { width: 22px; height: 22px; border-radius: 6px; background: var(--rainbow); flex: none; }
+  header h1 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; }
+  header button {
+    background: none; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 8px; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  header button:hover { color: var(--fg); }
+
+  /* Zona de mensajes */
+  #stage { flex: 1; overflow-y: auto; }
+  .col { max-width: 760px; margin: 0 auto; padding: 0 16px; }
+  #messages { padding-top: 24px; padding-bottom: 8px; }
+  #welcome { display: none; text-align: center; padding: 0 16px; }
+  #welcome h2 {
+    font-size: clamp(24px, 4vw, 32px); font-weight: 600;
+    line-height: 1.3; margin: 0 0 24px;
+  }
+
+  /* Estado inicial: saludo + cuadro de texto centrados */
+  .empty #welcome { display: block; }
+  .empty #stage { flex: none; overflow: visible; margin-top: auto; }
+  .empty #messages { display: none; }
+  .empty #composer { margin-bottom: auto; }
+
+  /* Mensajes */
+  .msg { display: flex; gap: 12px; margin: 0 0 24px; }
+  .msg.user { justify-content: flex-end; }
+  .msg.user .bubble {
+    background: var(--user); padding: 10px 16px; border-radius: 20px;
+    max-width: 85%; white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .avatar { width: 28px; height: 28px; border-radius: 8px; background: var(--rainbow); flex: none; margin-top: 2px; }
+  .content { min-width: 0; flex: 1; }
+  .body { overflow-wrap: anywhere; }
+  .body p { margin: 0 0 12px; }
+  .body > :last-child { margin-bottom: 0; }
+  .body ul, .body ol { margin: 0 0 12px; padding-left: 24px; }
+  .body li { margin: 2px 0; }
+  .body h3, .body h4, .body h5, .body h6 { margin: 16px 0 8px; line-height: 1.3; }
+  .body code {
+    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .9em;
+    background: var(--code-bg); padding: .15em .35em; border-radius: 5px;
+  }
+  .body pre {
+    position: relative; background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px; overflow-x: auto; margin: 0 0 12px;
+  }
+  .body pre code { background: none; padding: 0; font-size: 13.5px; line-height: 1.5; overflow-wrap: normal; }
+  .copy {
+    position: absolute; top: 6px; right: 6px; font: inherit; font-size: 12px;
+    background: var(--surface); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 6px; padding: 2px 8px; cursor: pointer;
+  }
+  .copy:hover { color: var(--fg); }
+  .aviso { color: var(--muted); font-style: italic; }
+  .error { color: var(--error); }
+  .sources { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+  .sources:empty { display: none; }
+  .chip { border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; }
+
+  /* Indicadores */
+  .cursor {
+    display: inline-block; width: 8px; height: 1em; background: var(--fg);
+    vertical-align: text-bottom; margin-left: 2px; animation: blink 1s steps(2) infinite;
+  }
+  .dots i {
+    display: inline-block; width: 7px; height: 7px; margin: 0 2px; border-radius: 50%;
+    background: var(--muted); animation: pulse 1.2s infinite ease-in-out;
+  }
+  .dots i:nth-child(2) { animation-delay: .15s; }
+  .dots i:nth-child(3) { animation-delay: .3s; }
+  @keyframes blink { 50% { opacity: 0; } }
+  @keyframes pulse { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .cursor, .dots i { animation: none; } }
+
+  /* Cuadro de texto */
+  #composer { padding: 8px 16px 12px; }
+  .box {
+    max-width: 760px; margin: 0 auto; display: flex; align-items: flex-end; gap: 8px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 24px; padding: 8px 8px 8px 18px;
+  }
+  .box:focus-within { border-color: var(--muted); }
+  textarea {
+    flex: 1; resize: none; border: 0; outline: 0; background: transparent;
+    color: inherit; font: inherit; line-height: 1.5; max-height: 200px; padding: 6px 0;
+  }
+  textarea::placeholder { color: var(--muted); }
+  #send {
+    width: 36px; height: 36px; border-radius: 50%; border: 0; flex: none;
+    background: var(--fg); color: var(--bg); cursor: pointer; display: grid; place-items: center;
+  }
+  #send:disabled { opacity: .3; cursor: default; }
+  #send .stop { display: none; }
+  #send.stop .go { display: none; }
+  #send.stop .stop { display: block; }
+  .nota { max-width: 760px; margin: 8px auto 0; text-align: center; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div id="app" class="empty">
+  <header>
+    <div class="logo"></div>
+    <h1 id="nombre"></h1>
+    <button id="nueva" type="button">Nueva conversación</button>
+  </header>
+
+  <section id="stage">
+    <div id="welcome"><h2 id="saludo"></h2></div>
+    <div id="messages" class="col" role="log" aria-live="polite"></div>
+  </section>
+
+  <footer id="composer">
+    <div class="box">
+      <textarea id="input" rows="1" placeholder="Pregunta lo que quieras sobre la documentación…" autofocus></textarea>
+      <button id="send" type="button" aria-label="Enviar" disabled>
+        <svg class="go" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+        <svg class="stop" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="3"/></svg>
+      </button>
+    </div>
+    <div class="nota">Las respuestas las genera una IA a partir de la documentación y pueden contener errores. Comprueba el código antes de usarlo.</div>
+  </footer>
+</div>
+
+<script>
+  // ---- Personaliza aquí ----
+  const NOMBRE = "Wilson, el asistente MK1";
+  const SALUDOS = [
+    "¿En qué puedo ayudarte con tu juego para el OM?",
+    "0 OK, 0:1 — Pregúntame lo que quieras sobre la documentación.",
+    "¿Atascado con un sprite, un tile o una colisión? Cuéntame.",
+    "Hola, ¿qué vamos a construir hoy?",
+    "Bienvenido. ¿Qué quieres saber sobre el motor MK1 o MojonTwins?",
+    "Cargando... listo. ¿Cuál es tu duda?",
+    "Dispara. Wilson te escucha",
+    "Hola Amador, que quieres?",
+    "Kiere pelea?",
+    "Dudas en Badajoz? pregúntame",
+    "Soy Wilson, el primo de Eleuterio. Aqui estoy para tus dudas"
+  ];
+  // --------------------------
+
+  const $ = (s) => document.querySelector(s);
+  const app = $("#app"), stage = $("#stage"), msgs = $("#messages");
+  const input = $("#input"), btn = $("#send"), saludo = $("#saludo");
+  let generando = false, controlador = null, stick = true;
+
+  $("#nombre").textContent = NOMBRE;
+  document.title = NOMBRE;
+
+  function nuevoSaludo() {
+    saludo.textContent = SALUDOS[Math.floor(Math.random() * SALUDOS.length)];
+  }
+  nuevoSaludo();
+
+  // ---- Markdown mínimo (con escape de HTML) ----
+  function esc(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function inline(s) {
+    return s.split(/(`[^`]+`)/).map((parte, i) => {
+      if (i % 2 === 1) return "<code>" + esc(parte.slice(1, -1)) + "</code>";
+      let t = esc(parte);
+      t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      t = t.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+      return t;
+    }).join("");
+  }
+  function bloqueCodigo(lineas) {
+    return '<pre><button class="copy" type="button">Copiar</button><code>' +
+      esc(lineas.join("\n")) + "</code></pre>";
+  }
+  function renderMd(texto) {
+    let html = "", enCodigo = false, codigo = [], lista = null, parrafo = [];
+    const cerrarParrafo = () => {
+      if (parrafo.length) { html += "<p>" + parrafo.join("<br>") + "</p>"; parrafo = []; }
+    };
+    const cerrarLista = () => { if (lista) { html += "</" + lista + ">"; lista = null; } };
+
+    for (const linea of texto.split("\n")) {
+      if (enCodigo) {
+        if (linea.trim().startsWith("```")) { html += bloqueCodigo(codigo); enCodigo = false; codigo = []; }
+        else codigo.push(linea);
+        continue;
+      }
+      if (linea.trim().startsWith("```")) { cerrarParrafo(); cerrarLista(); enCodigo = true; continue; }
+
+      let m;
+      if ((m = linea.match(/^(#{1,4})\s+(.*)/))) {
+        cerrarParrafo(); cerrarLista();
+        const n = m[1].length + 2;
+        html += "<h" + n + ">" + inline(m[2]) + "</h" + n + ">";
+      } else if ((m = linea.match(/^\s*[-*]\s+(.*)/))) {
+        cerrarParrafo();
+        if (lista !== "ul") { cerrarLista(); html += "<ul>"; lista = "ul"; }
+        html += "<li>" + inline(m[1]) + "</li>";
+      } else if ((m = linea.match(/^\s*\d+\.\s+(.*)/))) {
+        cerrarParrafo();
+        if (lista !== "ol") { cerrarLista(); html += "<ol>"; lista = "ol"; }
+        html += "<li>" + inline(m[1]) + "</li>";
+      } else if (!linea.trim()) {
+        cerrarParrafo(); cerrarLista();
+      } else {
+        cerrarLista();
+        parrafo.push(inline(linea));
+      }
+    }
+    if (enCodigo) html += bloqueCodigo(codigo);  // bloque aún sin cerrar mientras llega el stream
+    cerrarParrafo(); cerrarLista();
+    return html;
+  }
+
+  // ---- Interfaz ----
+  function bajar() { if (stick) stage.scrollTop = stage.scrollHeight; }
+  stage.addEventListener("scroll", () => {
+    stick = stage.scrollHeight - stage.scrollTop - stage.clientHeight < 80;
+  });
+
+  function ajustar() {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 200) + "px";
+    btn.disabled = !generando && !input.value.trim();
+  }
+  function setGenerando(v) {
+    generando = v;
+    btn.classList.toggle("stop", v);
+    btn.setAttribute("aria-label", v ? "Detener" : "Enviar");
+    btn.disabled = !v && !input.value.trim();
+  }
+
+  function agregarUsuario(texto) {
+    const d = document.createElement("div");
+    d.className = "msg user";
+    const b = document.createElement("div");
+    b.className = "bubble";
+    b.textContent = texto;
+    d.appendChild(b);
+    msgs.appendChild(d);
+  }
+  function agregarAsistente() {
+    const d = document.createElement("div");
+    d.className = "msg bot";
+    d.innerHTML = '<div class="avatar"></div><div class="content">' +
+      '<div class="body"><span class="dots"><i></i><i></i><i></i></span></div>' +
+      '<div class="sources"></div></div>';
+    msgs.appendChild(d);
+    return d;
+  }
+  function mostrarFuentes(el, fuentes) {
+    if (!fuentes.length) return;
+    el.innerHTML = "<span>Fuentes:</span>" +
+      fuentes.map((f) => '<span class="chip">' + esc(f) + "</span>").join("");
+  }
+
+  async function enviar() {
+    const texto = input.value.trim();
+    if (!texto || generando) return;
+
+    app.classList.remove("empty");
+    agregarUsuario(texto);
+    input.value = "";
+    ajustar();
+
+    const bot = agregarAsistente();
+    const cuerpo = bot.querySelector(".body");
+    const fuentes = bot.querySelector(".sources");
+    let acumulado = "";
+
+    setGenerando(true);
+    controlador = new AbortController();
+    stick = true;
+    bajar();
+
+    try {
+      const r = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pregunta: texto }),
+        signal: controlador.signal,
+      });
+      if (r.status === 429) throw new Error("Demasiadas preguntas seguidas. Espera un momento e inténtalo de nuevo.");
+      if (!r.ok) throw new Error("El servidor no pudo procesar la pregunta.");
+
+      const lector = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { value, done } = await lector.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n")) >= 0) {
+          const linea = buf.slice(0, i).trim();
+          buf = buf.slice(i + 1);
+          if (!linea) continue;
+          const m = JSON.parse(linea);
+          if (m.t) {
+            acumulado += m.t;
+            cuerpo.innerHTML = renderMd(acumulado) + '<span class="cursor"></span>';
+            bajar();
+          } else if (m.fuentes) {
+            mostrarFuentes(fuentes, m.fuentes);
+          } else if (m.error) {
+            throw new Error(m.error);
+          }
+        }
+      }
+      cuerpo.innerHTML = acumulado ? renderMd(acumulado) : '<p class="aviso">No he recibido respuesta.</p>';
+    } catch (e) {
+      const previo = acumulado ? renderMd(acumulado) : "";
+      if (e.name === "AbortError") {
+        cuerpo.innerHTML = previo + '<p class="aviso">Respuesta detenida.</p>';
+      } else {
+        cuerpo.innerHTML = previo + '<p class="error">' + esc(e.message) + "</p>";
+      }
+    } finally {
+      setGenerando(false);
+      controlador = null;
+      bajar();
+      input.focus();
+    }
+  }
+
+  function nuevaConversacion() {
+    if (controlador) controlador.abort();
+    msgs.innerHTML = "";
+    nuevoSaludo();
+    app.classList.add("empty");
+    input.focus();
+  }
+
+  input.addEventListener("input", ajustar);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      enviar();
+    }
+  });
+  btn.addEventListener("click", () => {
+    if (generando && controlador) controlador.abort();
+    else enviar();
+  });
+  $("#nueva").addEventListener("click", nuevaConversacion);
+
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest(".copy");
+    if (!b) return;
+    const codigo = b.closest("pre").querySelector("code").innerText;
+    navigator.clipboard.writeText(codigo).then(() => {
+      b.textContent = "Copiado";
+      setTimeout(() => { b.textContent = "Copiar"; }, 1500);
+    });
+  });
+
+  ajustar();
+</script>
+</body>
+</html>
